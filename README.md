@@ -3,7 +3,7 @@
 This is a port of clinfo from Ubuntu/Debian/etc to Windows.
 
 Instead of using GNU Make, the build process uses CMake, and the source code has been modified to work with Microsoft Visual Studio in addition to GCC.
-I've tested building this project on Visual Studio 2015 (MSVC14) and GCC 6.2 (Ubuntu 16.04).
+I've tested building this project on Visual Studio 2015 (MSVC14) and GCC 6.2 (Ubuntu 16.10).
 I have done no testing on macOS (pull requests appreciated!), though it should work there.
 
 I do not port dlopen/dlsym/dlclose; you'll need a version of these for Windows.
