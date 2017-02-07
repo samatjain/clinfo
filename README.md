@@ -9,9 +9,21 @@ I have done no testing on macOS (pull requests appreciated!), though it should w
 I do not port dlopen/dlsym/dlclose; you'll need a version of these for Windows.
 I used https://github.com/dlfcn-win32/dlfcn-win32 to create the binary below.
 
+## Bugs
+
+### Unresolved symbol for `EnumProcessModules`
+
+The CMake project does not build-as is on Windows.
+You'll get an error about an unresolved symbol `EnumProcessModules`, which comes from Psapi.lib.
+I've not been able to get CMake to find or link to this library, so once the project has been configured,
+you need to open the project in Visual Studio, go to the linker settings, and manually add Psapi.lib as a dependency library.
+Pull requests for fixing this are very much appreciated!
+
 ## Released binary
 
-Built with Visual Studio 2015. You'll need to download and install the [Microsoft Visual Studio 2015 runtime](https://www.microsoft.com/en-us/download/details.aspx?id=48145).
+See the "Release" tab on GitHub.
+
+Built with Visual Studio 2015. You'll need to download and install the [Visual C++ for Visual Studio 2015 runtime](https://www.microsoft.com/en-us/download/details.aspx?id=48145).
 
 ## Original README
 
