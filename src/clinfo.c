@@ -4,10 +4,18 @@
 
 #include <time.h>
 #include <string.h>
-#include <dlfcn.h>
 
-#ifndef RTLD_DEFAULT
-#define RTLD_DEFAULT ((void*)0)
+/* We will want to check for symbols in the OpenCL library.
+ * On Windows, we must get the module handle for it, on Unix-like
+ * systems we can just use RTLD_DEFAULT
+ */
+#ifdef _MSC_VER
+# include <windows.h>
+# define dlsym GetProcAddress
+# define DL_MODULE GetModuleHandle("OpenCL")
+#else
+# include <dlfcn.h>
+# define DL_MODULE ((void*)0) /* This would be RTLD_DEFAULT */
 #endif
 
 /* ISO C forbids assignments between function pointers and void pointers,
@@ -22,7 +30,7 @@
  */
 #include "fmtmacros.h"
 
-// Support for the horrible MS C compiler
+// More support for the horrible MS C compiler
 #ifdef _MSC_VER
 #include "ms_support.h"
 #endif
@@ -34,9 +42,11 @@
 
 #define ARRAY_SIZE(ar) (sizeof(ar)/sizeof(*ar))
 #ifdef _GNUC
-#define UNUSED __attribute__((unused))
+#ifndef UNUSED
+#define UNUSED(x) x __attribute__((unused))
+#endif
 #else
-#define UNUSED
+#define UNUSED(x)
 #endif
 
 struct platform_data {
@@ -202,11 +212,15 @@ static const char* svm_cap_raw_str[] = {
 
 const size_t svm_cap_count = ARRAY_SIZE(svm_cap_str);
 
+/* SI suffixes for memory sizes. Note that in OpenCL most of them are
+ * passed via a cl_ulong, which at most can mode 16 EiB, but hey,
+ * let's be forward-thinking ;-)
+ */
 static const char* memsfx[] = {
-	"B", "KiB", "MiB", "GiB", "TiB"
+	"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"
 };
 
-const size_t memsfx_count = ARRAY_SIZE(memsfx);
+const size_t memsfx_end = ARRAY_SIZE(memsfx) + 1;
 
 static const char* lmem_type_str[] = { none, "Local", "Global" };
 static const char* lmem_type_raw_str[] = { none_raw, "CL_LOCAL", "CL_GLOBAL" };
@@ -317,18 +331,9 @@ void show_strbuf(const char *pname, int skip)
 }
 
 int
-platform_info_str(cl_platform_id pid, cl_platform_info param, const char* pname, const struct platform_info_checks * chk UNUSED)
+platform_info_str(cl_platform_id pid, cl_platform_info param, const char* pname, const struct platform_info_checks* UNUSED(chk))
 {
-	error = clGetPlatformInfo(pid, param, 0, NULL, &nusz);
-	if (nusz > bufsz) {
-		REALLOC(strbuf, nusz, current_param);
-		bufsz = nusz;
-	}
-	had_error = REPORT_ERROR2("get %s size");
-	if (!had_error) {
-		error = clGetPlatformInfo(pid, param, bufsz, strbuf, NULL);
-		had_error = REPORT_ERROR2("get %s");
-	}
+	GET_STRING2(clGetPlatformInfo, pid, param);
 	/* when only listing, do not print anything we're just gathering
 	 * information
 	 */
@@ -338,7 +343,7 @@ platform_info_str(cl_platform_id pid, cl_platform_info param, const char* pname,
 }
 
 int
-platform_info_ulong(cl_platform_id pid, cl_platform_info param, const char* pname, const struct platform_info_checks * chk UNUSED)
+platform_info_ulong(cl_platform_id pid, cl_platform_info param, const char* pname, const struct platform_info_checks* UNUSED(chk))
 {
 	cl_ulong val = 0;
 
@@ -771,7 +776,7 @@ void identify_device_extensions(const char *extensions, struct device_info_check
 
 #define DEFINE_DEVINFO_SHOW(how, type, fmt) \
 int device_info_##how(cl_device_id dev, cl_device_info param, const char *pname, \
-	const struct device_info_checks *chk UNUSED) \
+	const struct device_info_checks* UNUSED(chk)) \
 { \
 	type val = 0; \
 	SHOW_VAL(fmt); \
@@ -780,19 +785,10 @@ int device_info_##how(cl_device_id dev, cl_device_info param, const char *pname,
 
 /* Get string-type info without showing it */
 int device_info_str_get(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	current_param = pname;
-	error = clGetDeviceInfo(dev, param, 0, NULL, &nusz);
-	if (nusz > bufsz) {
-		REALLOC(strbuf, nusz, current_param);
-		bufsz = nusz;
-	}
-	had_error = REPORT_ERROR2("get %s size");
-	if (!had_error) {
-		error = clGetDeviceInfo(dev, param, bufsz, strbuf, NULL);
-		had_error = REPORT_ERROR2("get %s");
-	}
+	GET_STRING2(clGetDeviceInfo, dev, param);
 	return had_error;
 }
 
@@ -810,7 +806,7 @@ DEFINE_DEVINFO_SHOW(long, cl_ulong, "%" PRIu64)
 DEFINE_DEVINFO_SHOW(sz, size_t, "%" PRIuS)
 
 int device_info_bool(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_bool val = 0;
 	const char * const * str = (output_mode == CLINFO_HUMAN ?
@@ -829,7 +825,7 @@ int device_info_bool(cl_device_id dev, cl_device_info param, const char *pname,
 }
 
 int device_info_bits(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_uint val;
 	GET_VAL;
@@ -842,9 +838,9 @@ int device_info_bits(cl_device_id dev, cl_device_info param, const char *pname,
 
 size_t strbuf_mem(cl_ulong val, size_t szval)
 {
-	double dbl = val;
+	double dbl = (double)val;
 	size_t sfx = 0;
-	while (dbl > 1024 && sfx < memsfx_count) {
+	while (dbl > 1024 && sfx < memsfx_end) {
 		dbl /= 1024;
 		++sfx;
 	}
@@ -853,7 +849,7 @@ size_t strbuf_mem(cl_ulong val, size_t szval)
 }
 
 int device_info_mem(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_ulong val = 0;
 	size_t szval = 0;
@@ -868,7 +864,7 @@ int device_info_mem(cl_device_id dev, cl_device_info param, const char *pname,
 }
 
 int device_info_mem_int(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_uint val = 0;
 	size_t szval = 0;
@@ -882,8 +878,23 @@ int device_info_mem_int(cl_device_id dev, cl_device_info param, const char *pnam
 	return had_error;
 }
 
+int device_info_mem_sz(cl_device_id dev, cl_device_info param, const char *pname,
+	const struct device_info_checks* UNUSED(chk))
+{
+	size_t val = 0;
+	size_t szval = 0;
+	GET_VAL;
+	if (!had_error) {
+		szval += sprintf(strbuf, "%" PRIuS, val);
+		if (output_mode == CLINFO_HUMAN && val > 1024)
+			strbuf_mem(val, szval);
+	}
+	show_strbuf(pname, 0);
+	return had_error;
+}
+
 int device_info_free_mem_amd(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	size_t *val = NULL;
 	size_t szval = 0, numval = 0;
@@ -907,7 +918,7 @@ int device_info_free_mem_amd(cl_device_id dev, cl_device_info param, const char 
 }
 
 int device_info_time_offset(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_ulong val = 0;
 	GET_VAL;
@@ -925,7 +936,7 @@ int device_info_time_offset(cl_device_id dev, cl_device_info param, const char *
 }
 
 int device_info_szptr(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	size_t *val = NULL;
 	size_t szval = 0, numval = 0;
@@ -948,8 +959,8 @@ int device_info_szptr(cl_device_id dev, cl_device_info param, const char *pname,
 	return had_error;
 }
 
-int device_info_wg(cl_device_id dev, cl_device_info param UNUSED, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+int device_info_wg(cl_device_id dev, cl_device_info UNUSED(param), const char *pname,
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_platform_id val = NULL;
 	{
@@ -969,7 +980,7 @@ int device_info_wg(cl_device_id dev, cl_device_info param UNUSED, const char *pn
 }
 
 int device_info_img_sz_2d(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	size_t width = 0, height = 0, val = 0;
 	GET_VAL; /* HEIGHT */
@@ -988,7 +999,7 @@ int device_info_img_sz_2d(cl_device_id dev, cl_device_info param, const char *pn
 }
 
 int device_info_img_sz_intel_planar_yuv(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	size_t width = 0, height = 0, val = 0;
 	GET_VAL; /* HEIGHT */
@@ -1008,7 +1019,7 @@ int device_info_img_sz_intel_planar_yuv(cl_device_id dev, cl_device_info param, 
 
 
 int device_info_img_sz_3d(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	size_t width = 0, height = 0, depth = 0, val = 0;
 	GET_VAL; /* HEIGHT */
@@ -1035,7 +1046,7 @@ int device_info_img_sz_3d(cl_device_id dev, cl_device_info param, const char *pn
 
 
 int device_info_devtype(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_device_type val = 0;
 	GET_VAL;
@@ -1068,7 +1079,7 @@ int device_info_devtype(cl_device_id dev, cl_device_info param, const char *pnam
 }
 
 int device_info_cachetype(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_device_mem_cache_type val = 0;
 	GET_VAL;
@@ -1085,7 +1096,7 @@ int device_info_cachetype(cl_device_id dev, cl_device_info param, const char *pn
 }
 
 int device_info_lmemtype(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_device_local_mem_type val = 0;
 	GET_VAL;
@@ -1126,7 +1137,7 @@ void devtopo_str(const cl_device_topology_amd *devtopo)
 }
 
 int device_info_devtopo_amd(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_device_topology_amd val;
 	GET_VAL;
@@ -1140,7 +1151,7 @@ int device_info_devtopo_amd(cl_device_id dev, cl_device_info param, const char *
 
 /* we assemble a cl_device_topology_amd struct from the NVIDIA info */
 int device_info_devtopo_nv(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_device_topology_amd devtopo;
 	cl_uint val = 0;
@@ -1158,7 +1169,7 @@ int device_info_devtopo_nv(cl_device_id dev, cl_device_info param, const char *p
 		GET_VAL;
 
 		if (!had_error) {
-			devtopo.pcie.device = val >> 3;
+			devtopo.pcie.device = (val >> 3) & 0xff;
 			devtopo.pcie.function = val & 7;
 			devtopo_str(&devtopo);
 		}
@@ -1170,7 +1181,7 @@ int device_info_devtopo_nv(cl_device_id dev, cl_device_info param, const char *p
 
 /* NVIDIA Compute Capability */
 int device_info_cc_nv(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_uint major = 0, val = 0;
 	GET_VAL; /* MAJOR */
@@ -1189,7 +1200,7 @@ int device_info_cc_nv(cl_device_id dev, cl_device_info param, const char *pname,
 
 /* AMD GFXIP */
 int device_info_gfxip_amd(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_uint major = 0, val = 0;
 	GET_VAL; /* MAJOR */
@@ -1208,7 +1219,7 @@ int device_info_gfxip_amd(cl_device_id dev, cl_device_info param, const char *pn
 
 
 /* Device Partition, CLINFO_HUMAN header */
-int device_info_partition_header(cl_device_id dev UNUSED, cl_device_info param UNUSED,
+int device_info_partition_header(cl_device_id UNUSED(dev), cl_device_info UNUSED(param),
 	const char *pname, const struct device_info_checks *chk)
 {
 	int is_12 = dev_is_12(chk);
@@ -1227,7 +1238,7 @@ int device_info_partition_header(cl_device_id dev UNUSED, cl_device_info param U
 
 /* Device partition properties */
 int device_info_partition_types(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	size_t numval = 0, szval = 0, cursor = 0, slen = 0;
 	cl_device_partition_property *val = NULL;
@@ -1281,7 +1292,7 @@ int device_info_partition_types(cl_device_id dev, cl_device_info param, const ch
 }
 
 int device_info_partition_types_ext(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	size_t numval = 0, szval = 0, cursor = 0, slen = 0;
 	cl_device_partition_property_ext *val = NULL;
@@ -1339,7 +1350,7 @@ int device_info_partition_types_ext(cl_device_id dev, cl_device_info param, cons
 
 /* Device partition affinity domains */
 int device_info_partition_affinities(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_device_affinity_domain val;
 	GET_VAL;
@@ -1370,7 +1381,7 @@ int device_info_partition_affinities(cl_device_id dev, cl_device_info param, con
 }
 
 int device_info_partition_affinities_ext(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	size_t numval = 0, szval = 0, cursor = 0, slen = 0;
 	cl_device_partition_property_ext *val = NULL;
@@ -1545,7 +1556,7 @@ int device_info_qprop(cl_device_id dev, cl_device_info param, const char *pname,
 
 /* Execution capbilities */
 int device_info_execap(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_device_exec_capabilities val = 0;
 	GET_VAL;
@@ -1572,7 +1583,7 @@ int device_info_execap(cl_device_id dev, cl_device_info param, const char *pname
 
 /* Arch bits and endianness (HUMAN) */
 int device_info_arch(cl_device_id dev, cl_device_info param, const char *pname,
-	const struct device_info_checks *chk UNUSED)
+	const struct device_info_checks* UNUSED(chk))
 {
 	cl_uint bits = 0;
 	{
@@ -1778,7 +1789,7 @@ struct device_info_traits dinfo_traits[] = {
 
 	/* Global memory cache */
 	{ CLINFO_BOTH, DINFO(CL_DEVICE_GLOBAL_MEM_CACHE_TYPE, "Global Memory cache type", cachetype), NULL },
-	{ CLINFO_BOTH, DINFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE, "Global Memory cache size", sz), dev_has_cache },
+	{ CLINFO_BOTH, DINFO(CL_DEVICE_GLOBAL_MEM_CACHE_SIZE, "Global Memory cache size", mem), dev_has_cache },
 	{ CLINFO_BOTH, DINFO_SFX(CL_DEVICE_GLOBAL_MEM_CACHELINE_SIZE, "Global Memory cache line", " bytes", int), dev_has_cache },
 
 	/* Image support */
@@ -1858,7 +1869,7 @@ struct device_info_traits dinfo_traits[] = {
 	 */
 	{ CLINFO_BOTH, DINFO(CL_DEVICE_IL_VERSION, INDENT "IL version", str), dev_is_21, },
 	{ CLINFO_BOTH, DINFO(CL_DEVICE_SPIR_VERSIONS, INDENT "SPIR versions", str), dev_has_spir },
-	{ CLINFO_BOTH, DINFO(CL_DEVICE_PRINTF_BUFFER_SIZE, "printf() buffer size", mem), dev_is_12 },
+	{ CLINFO_BOTH, DINFO(CL_DEVICE_PRINTF_BUFFER_SIZE, "printf() buffer size", mem_sz), dev_is_12 },
 	{ CLINFO_BOTH, DINFO(CL_DEVICE_BUILT_IN_KERNELS, "Built-in kernels", str), dev_is_12 },
 	{ CLINFO_BOTH, DINFO(CL_DEVICE_ME_VERSION_INTEL, "Motion Estimation accelerator version (Intel)", int), dev_has_intel_AME },
 	{ CLINFO_BOTH, DINFO(CL_DEVICE_AVC_ME_VERSION_INTEL, INDENT "Device-side AVC Motion Estimation version", int), dev_has_intel_AVC_ME },
@@ -2344,7 +2355,7 @@ void checkNullCtxFromType(void)
 	ALLOC(devs, ndevs, "context devices");
 
 	current_function = __func__;
-	for (t = 2; t < devtype_count; ++t) { /* we skip 0 and _DEFAULT */
+	for (t = 1; t < devtype_count; ++t) { /* we skip 0 */
 		current_param = device_type_raw_str[t];
 
 		sprintf(strbuf, "clCreateContextFromType(NULL, %s)", current_param);
@@ -2534,16 +2545,7 @@ struct icd_loader_test {
 int
 icdl_info_str(cl_icdl_info param, const char* pname)
 {
-	error = clGetICDLoaderInfoOCLICD(param, 0, NULL, &nusz);
-	if (nusz > bufsz) {
-		REALLOC(strbuf, nusz, current_param);
-		bufsz = nusz;
-	}
-	had_error = REPORT_ERROR2("get %s size");
-	if (!had_error) {
-		error = clGetICDLoaderInfoOCLICD(param, bufsz, strbuf, NULL);
-		had_error = REPORT_ERROR2("get %s");
-	}
+	GET_STRING2(clGetICDLoaderInfoOCLICD, param);
 	show_strbuf(pname, 1);
 	return had_error;
 }
@@ -2580,7 +2582,7 @@ void oclIcdProps(void)
 		struct icd_loader_test check = icd_loader_tests[i];
 		if (check.symbol == NULL)
 			break;
-		if (dlsym(RTLD_DEFAULT, check.symbol) == NULL)
+		if (dlsym(DL_MODULE, check.symbol) == NULL)
 			break;
 		icdl_ocl_version_found = check.version;
 		++i;
@@ -2598,8 +2600,7 @@ void oclIcdProps(void)
 	 */
 
 #ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4996)
+#pragma warning(suppress : 4996)
 #elif defined __GNUC__ && ((__GNUC__*10 + __GNUC_MINOR__) >= 46)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -2607,9 +2608,7 @@ void oclIcdProps(void)
 
 	PTR_FUNC_PTR clGetICDLoaderInfoOCLICD = clGetExtensionFunctionAddress("clGetICDLoaderInfoOCLICD");
 
-#ifdef _MSC_VER
-#pragma warning(pop)
-#elif defined __GNUC__ && ((__GNUC__*10 + __GNUC_MINOR__) >= 46)
+#if defined __GNUC__ && ((__GNUC__*10 + __GNUC_MINOR__) >= 46)
 #pragma GCC diagnostic pop
 #endif
 
@@ -2668,7 +2667,7 @@ void oclIcdProps(void)
 
 void version(void)
 {
-	puts("clinfo version 2.1.16.01.12");
+	puts("clinfo version 2.1.17.02.09");
 }
 
 void usage(void)

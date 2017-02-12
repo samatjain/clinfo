@@ -12,13 +12,26 @@ size_t bufsz, nusz;
 
 #define GET_STRING(cmd, param, param_str, ...) do { \
 	error = cmd(__VA_ARGS__, param, 0, NULL, &nusz); \
+	if (REPORT_ERROR("get " param_str " size")) break; \
 	if (nusz > bufsz) { \
 		REALLOC(strbuf, nusz, #param); \
 		bufsz = nusz; \
 	} \
-	if (REPORT_ERROR("get " param_str " size")) break; \
 	error = cmd(__VA_ARGS__, param, bufsz, strbuf, NULL); \
 	REPORT_ERROR("get " param_str); \
+} while (0)
+
+#define GET_STRING2(cmd, ...) do { \
+	error = cmd(__VA_ARGS__, 0, NULL, &nusz); \
+	had_error = REPORT_ERROR2("get %s size"); \
+	if (!had_error) { \
+		if (nusz > bufsz) { \
+			REALLOC(strbuf, nusz, current_param); \
+			bufsz = nusz; \
+		} \
+		error = cmd(__VA_ARGS__, bufsz, strbuf, NULL); \
+		had_error = REPORT_ERROR2("get %s"); \
+	} \
 } while (0)
 
 /* Skip leading whitespace in a string */
